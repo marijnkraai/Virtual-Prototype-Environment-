@@ -16,6 +16,14 @@ class PhysicalObject(Base):
     configurations = relationship("PhysicalObjectConfiguration", back_populates="physical_object")
     virtual_objects = relationship("VirtualObject", back_populates="physical_object")
 
+    def to_dict(self):
+        return {
+            'physical_object_id': self.physical_object_id,
+            'object_name': self.object_name,
+            'created_at': self.created_at,
+            'marker_id': self.marker_id
+    }
+
 # Table: Virtual Objects
 class VirtualObject(Base):
     __tablename__ = 'virtual_objects'
