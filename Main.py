@@ -4,8 +4,6 @@ from db_connect import Base, engine, session
 from models import PhysicalObject, Configuration, PhysicalObjectConfiguration, Product, VirtualObject, VirtualObjectConfiguration
 from sqlalchemy import text
 
-#TO DO 
-#
 def resetDB(session):
     try:
         # Temporarily disable foreign key constraints if necessary
@@ -102,8 +100,9 @@ def main():
     # Create tables in the database if they do not exist already
     Base.metadata.create_all(engine)
 
+    #TODO Only reset db for physical part :))
     #reset db
-    resetDB(session)
+    #resetDB(session)
 
     #create initial configuration
     currentConfig = createConfiguration('physical', "Initial Physical Configuration")
@@ -121,14 +120,15 @@ def main():
     if not cap.isOpened():
         print("webcam couldnt open")
 
-
 # Main Frame Loop:
     while(True):
         # Capture frame-by-frame
         N = 100 
         # This method returns True/False as well
         # as the video frame.
-        ret, frame = cap.read()  
+        ret, frame = cap.read() 
+        # Warp the perspective to create the new window
+        warped_image = cv2.warpPerspective(frame, GlobalTransform_Matrix, (width, height)) 
 
         # Detect ArUco markers in the video frame
         (corners, ids, rejected) = cv2.aruco.detectMarkers(
@@ -158,8 +158,6 @@ def main():
                     print(frame_count)
 
             else: 
-                # Warp the perspective to create the new window
-                warped_image = cv2.warpPerspective(frame, GlobalTransform_Matrix, (width, height))
                 ids = ids.tolist()
                 filtered_corners = []
                 filtered_ids = []
@@ -253,8 +251,16 @@ def main():
                             configuration.x_coordinate = new_x
                             configuration.y_coordinate = new_y
                     else:
-                        # Create new physical object if not found
-                        new_physical_object = PhysicalObject(object_name=f'object{marker_id}', marker_id=int(marker_id))
+                        #Add placeholder virtual object in database for connecting to physical objects (only debugging)
+                        new_virtual_object = VirtualObject(object_name = 'Test object for physical environment')
+                        session.add(new_virtual_object)
+                        session.flush()
+
+                        #Get virtual objects from database:
+                        #TODO implement mapping between virtual and physical objects 
+                        #VirtualObjectID = mapPhysicaltoVirtual(Physicalobject.marker_id)
+
+                        new_physical_object = PhysicalObject(virtual_object_id = new_virtual_object.virtual_object_id, object_name=f'object{marker_id}', marker_id=int(marker_id))
                         session.add(new_physical_object)
                         session.flush()
                         new_physical_objects.append(new_physical_object)
@@ -285,9 +291,11 @@ def main():
                 # Final commit to save all changes
                 session.commit()
 
-            #Show image
-            cv2.imshow("warped window", warped_image)
             
+        if frame_count > N:
+            #Show image
+            cv2.imshow("warped window", warped_image)  
+
 
         # Display the resulting frame
         cv2.imshow('frame', frame)
@@ -303,9 +311,10 @@ def main():
     # Close down the video stream
     cap.release()
     cv2.destroyAllWindows()
+    session.close()
 
     
    
 if __name__ == '__main__':
   main()
-  session.close()
+  
