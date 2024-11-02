@@ -1,0 +1,6 @@
+# G Code Sender
+SERIALPORTGCODE = "COM11" #COM...
+BAUDRATE = 115200
+
+#Arduino
+SERIALPORTARDUINO = "" #COM...

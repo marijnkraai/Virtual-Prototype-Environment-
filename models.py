@@ -2,6 +2,7 @@ from sqlalchemy import create_engine, String, Column, Integer, DateTime, MetaDat
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 from db_connect import Base
+import json
 
 # Table: Physical Objects
 class PhysicalObject(Base):
@@ -83,7 +84,16 @@ class PhysicalObjectConfiguration(Base):
     physical_object = relationship("PhysicalObject", back_populates="configurations")
     configuration = relationship("Configuration", back_populates="physical_configs")
     
-
+    def to_dict(self):
+        return {
+            "physical_object_config_id": self.physical_object_config_id,
+            "physical_object_id": self.physical_object_id,
+            "config_id": self.config_id,
+            "x_coordinate": self.x_coordinate,
+            "y_coordinate": self.y_coordinate,
+            "created_at": self.created_at,
+            "last_updated": self.last_updated
+    } 
 # Table: Virtual Object Configurations
 class VirtualObjectConfiguration(Base):
     __tablename__ = 'virtual_object_configurations'
@@ -131,3 +141,16 @@ class Product(Base):
 
     #relationships
     configuration = relationship("Configuration", back_populates="products")
+
+    def to_dict(self):
+        return {
+            'product_id': self.product_id,
+            'product_name': self.product_name,
+            'current_config': self.current_config,
+        } 
+    def toJSON(self):
+        return json.dumps(
+            self,
+            default=lambda o: o.__dict__, 
+            sort_keys=True,
+            indent=4)

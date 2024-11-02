@@ -1,10 +1,14 @@
 import cv2
 import numpy as np
 from db_connect import Base, engine, session
+from db_config import API_BASEURI
 from models import PhysicalObject, Configuration, PhysicalObjectConfiguration, Product, VirtualObject, VirtualObjectConfiguration
 from sqlalchemy import text
+import requests
+import simplejson as json 
 
-def resetDB(session):
+
+def resetDB(session): #TODO, remove this function, moved to API endpoint
     try:
         # Temporarily disable foreign key constraints if necessary
         session.execute(text("ALTER TABLE virtual_object_configurations NOCHECK CONSTRAINT ALL"))
@@ -48,12 +52,6 @@ def calculate_Transform_Matrix (width, height, aruco_corners, aruco_ids):
         marker_dict[3][2],  # Bottom-right corner of marker 3
         marker_dict[4][3]   # Bottom-left corner of marker 4
     ], dtype="float32")
-    
-    # Define the dimensions of the new window
-    #width = int(np.linalg.norm(marker_dict[1][0] - marker_dict[2][1]))
-    #height = int(np.linalg.norm(marker_dict[1][0] - marker_dict[4][3]))
-    w = width 
-    h = height
 
     # Define the destination points (rectangle)
     dst_points = np.array([
@@ -67,21 +65,109 @@ def calculate_Transform_Matrix (width, height, aruco_corners, aruco_ids):
     M = cv2.getPerspectiveTransform(src_points, dst_points)
     return M
 
-def createConfiguration(type, name):
+def filter_none_values(data):
+    if isinstance(data, dict):
+        return {k: filter_none_values(v) for k, v in data.items() if v is not None}
+    elif isinstance(data, list):
+        return [filter_none_values(item) for item in data]
+    return data
+
+def postRequest(obj, endpoint):
+    try:
+        url = f"{API_BASEURI}{endpoint}"
+        print(url)
+
+        # Use the object's to_dictionary method to get the dictionary representation
+        json_data = filter_none_values(obj.to_dict())
+        print("Sending JSON Data:", json_data)
+        
+        # Send the POST request with the JSON payload
+        rspns = requests.post(url, json=json_data, timeout=10)
+        print(rspns)
+        
+        # Check if the request was successful
+        if rspns.status_code in (200, 201):
+            print("Data sent successfully!")
+            return rspns.json()  # Return the server's response as a dictionary
+        else:
+            print("Failed to send data:", rspns.status_code, rspns.text)
+            return {"error": rspns.text}
+
+    except Exception as e:
+        print("An error occurred:", e)
+        return {"error": str(e)}
+
+
+def newConfiguration(type, name):
+    # Create a new Configuration object with the provided type and name
     newConfig = Configuration(
-        config_type = type,
-        config_name = name)
-    session.add(newConfig)
-    session.commit()
-    return newConfig
+        config_type=type,
+        config_name=name
+    )
+    # Use the postRequest function to send the new configuration to the server
+    response = postRequest(newConfig,"configurations")
+    print(f"response: {response}")
+    # Check if the response contains an error
+    if 'error' in response:
+        print("Error occurred:", response['error'])
+        # Add details from DB response
+    else:
+        newConfig.config_id = response.get("config_id")  # Update product_id if present in the response
+        #TODO add created_at
+    return newConfig  # Return the newly created configuration object
     
-def newProduct(name, configuration):
+def newProduct(name, configuration):    
+    # Create a new Product object with the provided name and the configuration ID
     newProduct = Product(
-        product_name = name,
-        current_config = configuration.config_id)
-    session.add(newProduct)
-    session.commit()
-    return newProduct
+        product_name=name,
+        current_config=configuration.config_id
+    )
+    # Use the postRequest function to send the new product to the server
+    response = postRequest(newProduct, "products")
+    # Check if the response contains an error
+    if 'error' in response:
+        print("Error occurred:", response['error'])
+    # Add details from DB response
+    if response:
+        newProduct.product_id = response.get("product_id")  # Update product_id if present in the response
+        #TODO, add created_at 
+    return newProduct  # Return the new product object
+
+def newPhysicalObject(vObjID, name, markerID):
+    newPhysicalObject = PhysicalObject(
+        virtual_object_id = vObjID,
+        object_name = name,
+        marker_id = markerID
+    )
+    # Send a Post request to the API
+    response = postRequest(newPhysicalObject, "physical_objects")
+    # Check if the response contains an error
+    if 'error' in response:
+        print("Error occurred:", response['error'])
+    # Add details from DB response
+    if response:
+        newPhysicalObject.physical_object_id = response.get("physical_object_id")  # Update physical object id if present in the response
+        #TODO, add created_at
+    return newPhysicalObject  # Return the new product object
+
+def newPhysicalObjectConfig(pObjID, configID, x, y):
+    newPhysicalObjectConfig = PhysicalObjectConfiguration(
+        physical_object_id = pObjID,
+        config_id = configID,
+        x_coordinate = x,
+        y_coordinate = y
+    )
+    # Send a Post request to the API
+    response = postRequest(newPhysicalObjectConfig, "physical_configurations")
+    # Check if the response contains an error
+    if 'error' in response:
+        print("Error occurred:", response['error'])
+    # Add details from DB response
+    if response:
+        newPhysicalObjectConfig.physical_object_config_id = response.get("physical_object_config_id")  # Update physical object id if present in the response
+        #TODO, add created_at & updated at
+
+    return newPhysicalObjectConfig  # Return the new product object
 
 def main():
     ### variable definition ###
@@ -102,10 +188,10 @@ def main():
 
     #TODO Only reset db for physical part :))
     #reset db
-    #resetDB(session)
+    #resetDB(session) ###DO NOT TURN ON, KEEPS THE SERVER BUSY AND THERFORE CANT PEFORM WRITE OPERATIONS
 
     #create initial configuration
-    currentConfig = createConfiguration('physical', "Initial Physical Configuration")
+    currentConfig = newConfiguration('physical', "Initial Physical Configuration")
     
     # Insert a new product with the initial configuration
     currentProduct = newProduct(productName, currentConfig)
@@ -115,7 +201,7 @@ def main():
     this_aruco_parameters = cv2.aruco.DetectorParameters()
 
     # Start videocapture (0 for integrated webcam, > 1 or 2 or 3 for external webcam)
-    cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 
     if not cap.isOpened():
         print("webcam couldnt open")
@@ -250,34 +336,34 @@ def main():
                             # No significant change, only update coordinates in memory
                             configuration.x_coordinate = new_x
                             configuration.y_coordinate = new_y
-                    else:
+                    else: #Physical object already exists::
+                           
+                        #Get virtual objects from database:
+                        #TODO implement mapping between virtual and physical objects 
+                        #VirtualObjectID = mapPhysicaltoVirtual(Physicalobject.marker_id)
+
                         #Add placeholder virtual object in database for connecting to physical objects (only debugging)
                         new_virtual_object = VirtualObject(object_name = 'Test object for physical environment')
                         session.add(new_virtual_object)
                         session.flush()
 
-                        #Get virtual objects from database:
-                        #TODO implement mapping between virtual and physical objects 
-                        #VirtualObjectID = mapPhysicaltoVirtual(Physicalobject.marker_id)
 
-                        new_physical_object = PhysicalObject(virtual_object_id = new_virtual_object.virtual_object_id, object_name=f'object{marker_id}', marker_id=int(marker_id))
-                        session.add(new_physical_object)
-                        session.flush()
-                        new_physical_objects.append(new_physical_object)
+                        new_physical_object = newPhysicalObject(
+                            new_virtual_object.virtual_object_id,
+                            f'Object {len(physicalObjects)+1}',
+                            int(marker_id) 
+                        )
 
                         # Add the new object to the map to avoid re-adding in the same loop
                         physicalObjects.append(new_physical_object)
 
                         # Prepare initial configuration for the new object
-                        init_physical_object_conf = PhysicalObjectConfiguration(
-                            physical_object_id=new_physical_object.physical_object_id,
-                            config_id=currentConfig.config_id,  # Assuming currentConfig is set before loop
-                            x_coordinate=int(transformed_x),
-                            y_coordinate=int(transformed_y)
+                        init_physical_object_conf = newPhysicalObjectConfig(
+                            new_physical_object.physical_object_id,
+                            currentConfig.config_id,  # Assuming currentConfig is set before loop
+                            int(transformed_x),
+                            int(transformed_y)
                         )
-                        new_configurations.append(init_physical_object_conf)
-                        session.add(init_physical_object_conf)
-                        session.flush()
 
                 # Step 2: Bulk save all new objects and configurations at once
                 if new_physical_objects:
