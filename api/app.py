@@ -1,24 +1,16 @@
 
-
-from db_config import DATABASE_URL, WS_SECRETKEY, API_BASEURI
 from flask import Flask, jsonify, request, abort
 from flask_sqlalchemy import SQLAlchemy
-#from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit
 from sqlalchemy import select
 from models import PhysicalObject, Configuration, VirtualObjectConfiguration, VirtualObject, PhysicalObjectConfiguration, Product # Import the common model
 from db_connect import Base, session, engine
 import json
-
-
-app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
-#app.config['SECRET_KEY'] = WS_SECRETKEY #TODO, add own secret key
+from webSocket import socketio
+from api_init import app
 
 # Create a db instance
 db = SQLAlchemy(app)
-
-#Create a socketyIO connection
-#socketio = SocketIO(app, cors_allowed_origins="*")
 
 @app.route('/resetDB', methods = ['DELETE'])
 def resetDB():
@@ -31,13 +23,13 @@ def resetDB():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     
-#@socketio.on('connect')
-#def handle_connect():
-    #print('A client connected via WebSocket')
+@socketio.on('connect')
+def handle_connect():
+    print('A client connected via WebSocket')
 
-#@socketio.on('disconnect')
-#def handle_disconnect():
-    #print('A client disconnected from WebSocket')
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('A client disconnected from WebSocket')
 
 @app.route('/products', methods = ['POST'])
 def add_product():
@@ -74,14 +66,15 @@ def add_configuration():
         abort(400, description="Missing config_type or config_name")
 
     #Add new configuration to DB
-    print("Data received:", data)
-    print("Data type:", type(data))
     new_configuration = Configuration(config_type = data['config_type'], config_name = data['config_name'])
     db.session.add(new_configuration)
     db.session.commit()
 
-    # Broadcast the update to all WebSocket-connected clients
-    #socketio.emit('configuration_update', data)
+    print("Configuration added:", new_configuration.to_dict)  # Debugging line
+
+    #Broadcast the update to all WebSocket-connected clients
+    socketio.emit('configuration_update', data)
+    print("Emitted configuration_update event")  # Debugging line
     
     return jsonify(new_configuration.to_dict()), 201  # Return the created object
 
@@ -127,11 +120,19 @@ def add_virtual_configuration():
         abort(400, description="Missing virtual_object_id, config_id, x_coordinate or y_coordinate ")
     
     #Create new virtual object
-    new_VirtualConfiguration = VirtualObjectConfiguration(virtual_object_id = data['virtual_object_id'], config_id = data['config_id'], x_coordinate = data['x_coordinate'], y_coordinate = data['y_coordinate'])
+    new_VirtualConfiguration = VirtualObjectConfiguration(
+        virtual_object_id = data['virtual_object_id'],
+        config_id = data['config_id'],
+        x_coordinate = data['x_coordinate'],
+        y_coordinate = data['y_coordinate']
+    )
 
     # Add and commit the new object to the session
     db.session.add(new_VirtualConfiguration)
     db.session.commit()
+
+    # send virtual configuration change to physical products using socket connection
+    socketio.emit('new_virtual_configuration', data)
 
     return jsonify(new_VirtualConfiguration.to_dict()), 201  # Return the created object
 
@@ -140,12 +141,12 @@ def add_physical_object():
     """Add a new physical object."""
     data = request.json
 
+    # Error handling, make sure all data was given
     if 'virtual_object_id' not in data or 'object_name' not in data or 'marker_id' not in data:
         abort(400, description="Missing virtual_object_id, object_name or marker_id ")
 
+    #Add new object to db from dataa
     new_object = PhysicalObject(virtual_object_id = data['virtual_object_id'], object_name=data['object_name'], marker_id=data['marker_id'])
-    
-    # Add and commit the new object to the session
     db.session.add(new_object)
     db.session.commit()
     
@@ -156,21 +157,24 @@ def add_physical_configuration():
     """Add a new virtual object."""
     data = request.json
 
+    # Error handling, make sure all data was given
     if 'physical_object_id' not in data or 'config_id' not in data or 'x_coordinate' not in data or 'y_coordinate' not in data:
         abort(400, description="Missing physical_object_id, config_id, x_coordinate or y_coordinate ")
 
+    # Add and physical configuration to db with received data
     new_PhysicalConfiguration = PhysicalObjectConfiguration(
         physical_object_id = data['physical_object_id'],
         config_id = data['config_id'],
         x_coordinate = data['x_coordinate'],
         y_coordinate = data['y_coordinate'])
-    
-    # Add and commit the new object to the session
     db.session.add(new_PhysicalConfiguration)
     db.session.commit()
-    
+
+    # emit physical configuration change through socket connection
+    socketio.emit('physical_configuration_change', data)
+
     return jsonify(new_PhysicalConfiguration.to_dict()), 201  # Return the created object
 
 if __name__ == '__main__':
-    app.run(debug=False)
+    socketio.run(app, debug=True)
 

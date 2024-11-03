@@ -1,25 +1,36 @@
-import requests
-from models import Configuration, Product, PhysicalObject, PhysicalObjectConfiguration
-from Main import filter_none_values
+import socketio
 
-def main():
-    newPhysicalObjectConfig = PhysicalObjectConfiguration(
-        physical_object_id = 1,
-        config_id = 90,
-        x_coordinate = 1,
-        y_coordinate = 1
-    )
-    print(newPhysicalObjectConfig.to_dict())
+# Initialize a Socket.IO client
+sio = socketio.Client()
 
-    json_data = filter_none_values(newPhysicalObjectConfig.to_dict())
-    print(json_data)
+# Built-in connect event handler
+@sio.event
+def connect():
+    print("Connected to the server")
+    sio.emit('create_object', {"object_id": 1})
 
-    #json = {"config_type": "physical", "config_name":"TEST TEST"}
-    response = requests.post("http://127.0.0.1:5000/physical_configurations", json= json_data, timeout=10)
-    print(response.status_code)
-    print(response.text)
+# Built-in disconnect event handler
+@sio.event
+def disconnect():
+    print("Disconnected from the server")
 
-if __name__ == '__main__':
-  main()
+# Default message event handler
+@sio.event
+def message(data):
+    print("Message from server:", data)
 
+@sio.on('configuration_update')
+def handle_configurationUpdate(data):
+    print('Received new configuration update:', data)
+
+@sio.on('virtual_configuation_change')
+def handle_configurationChange(data):
+    print(f'received virtual configuration update: {data}')
+
+try:
+    sio.connect('http://127.0.0.1:5000')
+except Exception as e:
+    print(f"Connection failed: {e}")
+    
+sio.wait()
 

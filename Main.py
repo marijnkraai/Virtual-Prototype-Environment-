@@ -1,42 +1,11 @@
 import cv2
 import numpy as np
-from db_connect import Base, engine, session
-from db_config import API_BASEURI
-from models import PhysicalObject, Configuration, PhysicalObjectConfiguration, Product, VirtualObject, VirtualObjectConfiguration
+from api.db_connect import Base, engine, session
+from api.db_config import API_BASEURI
+from api.models import PhysicalObject, Configuration, PhysicalObjectConfiguration, Product, VirtualObject, VirtualObjectConfiguration
 from sqlalchemy import text
 import requests
 import simplejson as json 
-
-
-def resetDB(session): #TODO, remove this function, moved to API endpoint
-    try:
-        # Temporarily disable foreign key constraints if necessary
-        session.execute(text("ALTER TABLE virtual_object_configurations NOCHECK CONSTRAINT ALL"))
-        session.execute(text("ALTER TABLE physical_object_configurations NOCHECK CONSTRAINT ALL"))
-        session.execute(text("ALTER TABLE configurations NOCHECK CONSTRAINT ALL"))
-        session.execute(text("ALTER TABLE virtual_objects NOCHECK CONSTRAINT ALL"))
-        session.execute(text("ALTER TABLE physical_objects NOCHECK CONSTRAINT ALL"))
-        session.execute(text("ALTER TABLE products NOCHECK CONSTRAINT ALL"))
-
-        # Delete all records from tables in order of dependencies
-        session.query(Configuration).delete(synchronize_session=False)
-        session.query(PhysicalObject).delete(synchronize_session=False)
-        session.query(VirtualObject).delete(synchronize_session=False)
-        session.query(Product).delete(synchronize_session = False)
-        session.query(VirtualObjectConfiguration).delete(synchronize_session=False)
-        session.query(PhysicalObjectConfiguration).delete(synchronize_session=False)
-
-        # Commit changes
-        session.commit()
-
-    finally:
-        # Re-enable foreign key constraints
-        session.execute(text("ALTER TABLE virtual_object_configurations WITH CHECK CHECK CONSTRAINT ALL"))
-        session.execute(text("ALTER TABLE physical_object_configurations WITH CHECK CHECK CONSTRAINT ALL"))
-        session.execute(text("ALTER TABLE configurations WITH CHECK CHECK CONSTRAINT ALL"))
-        session.execute(text("ALTER TABLE virtual_objects WITH CHECK CHECK CONSTRAINT ALL"))
-        session.execute(text("ALTER TABLE physical_objects WITH CHECK CHECK CONSTRAINT ALL"))
-        session.execute(text("ALTER TABLE products WITH CHECK CHECK CONSTRAINT ALL"))# Base class for declaring models (tables)
 
 def calculate_Transform_Matrix (width, height, aruco_corners, aruco_ids):
     marker_dict = {1: None, 2: None, 3: None, 4: None}
@@ -141,13 +110,16 @@ def newPhysicalObject(vObjID, name, markerID):
     )
     # Send a Post request to the API
     response = postRequest(newPhysicalObject, "physical_objects")
+
     # Check if the response contains an error
     if 'error' in response:
         print("Error occurred:", response['error'])
+
     # Add details from DB response
     if response:
         newPhysicalObject.physical_object_id = response.get("physical_object_id")  # Update physical object id if present in the response
         #TODO, add created_at
+
     return newPhysicalObject  # Return the new product object
 
 def newPhysicalObjectConfig(pObjID, configID, x, y):
@@ -185,10 +157,6 @@ def main():
 
     # Create tables in the database if they do not exist already
     Base.metadata.create_all(engine)
-
-    #TODO Only reset db for physical part :))
-    #reset db
-    #resetDB(session) ###DO NOT TURN ON, KEEPS THE SERVER BUSY AND THERFORE CANT PEFORM WRITE OPERATIONS
 
     #create initial configuration
     currentConfig = newConfiguration('physical', "Initial Physical Configuration")
@@ -317,6 +285,8 @@ def main():
 
                         # Check if the position error exceeds the threshold
                         if abs(new_x - old_x) > threshold or abs(new_y - old_y) > threshold:
+
+                            #TODO, API post request to create new configuration
                             # Create new configuration for this object
                             new_PhysicalConfig = Configuration(config_type='physical', config_name=f"config(add number)")
                             session.add(new_PhysicalConfig)
