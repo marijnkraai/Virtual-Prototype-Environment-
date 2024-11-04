@@ -12,6 +12,7 @@ import time
 from sqlalchemy.orm import scoped_session, sessionmaker
 
 
+
 db = SQLAlchemy(app)
 # Set up session management within the application context
 
@@ -19,8 +20,8 @@ db = SQLAlchemy(app)
 def resetDB():
     try:
         # Drop all tables and recreate them (this will delete all data)
-        Base.metadata.drop_all(engine)
-        Base.metadata.create_all(engine)
+        #Base.metadata.drop_all(engine)
+        #Base.metadata.create_all(engine)
 
         return jsonify({"message": "All data cleared successfully!"}), 200
     except Exception as e:
@@ -33,6 +34,12 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     print('A client disconnected from WebSocket')
+
+@socketio.on("newVirtualObjectMessage")
+def handle_new_virtual_object(data):
+    print("New Virtual Object detected", data)
+    emit("newVirtualObjectResponse", data, broadcast=True)  # Emit the response back to the client
+
 
 @app.route('/products', methods = ['POST'])
 def add_product():
@@ -54,17 +61,25 @@ def add_configuration():
     print("making configuration")
     #add a new configuration'
     data = request.json
-    print(data)
-    print(type(data))
 
     # Basic validation to ensure required fields are provided
     if not isinstance(data, dict) or 'config_type' not in data or 'config_name' not in data:
         abort(400, description="Missing config_type or config_name")
 
-    #Broadcast the update to all WebSocket-connected clients
-    socketio.emit('configuration_update', data)
-    print("Emitted configuration_update event")  # Debugging line
-    
+    #For virtual configurations, add them to the database, and emit them to connected devices
+    if data['config_type'] == 'virtual':
+        newVirtualConfiguration = Configuration(
+            config_type = data["config_type"],
+            config_name = data["config_name"]
+        )
+            
+        # Add and commit the new object to the session
+        db.session.add(newVirtualConfiguration)
+        db.session.commit()
+
+        print(newVirtualConfiguration.to_dict())
+        return jsonify(newVirtualConfiguration.to_dict())
+
     return jsonify(data), 201  # Return the created object
 
 @app.route('/virtual_objects', methods = ['POST'])
@@ -82,6 +97,11 @@ def add_virtual_object():
     # Add and commit the new object to the session
     db.session.add(new_VirtualObject)
     db.session.commit()
+
+    print(new_VirtualObject.to_dict())
+
+    # Send the new virtual object data though connected devices
+    socketio.emit("NewVirtualObject", new_VirtualObject.to_dict())
     
     return jsonify(new_VirtualObject.to_dict()), 201  # Return the created object
 
@@ -102,8 +122,6 @@ def get_physical_object(id):
 def add_virtual_configuration():
     #add a new virtual Object 
     data = request.json
-    print(data)
-
     # Basic validation to ensure required fields are provided
     if 'virtual_object_id' not in data or 'config_id' not in data or 'x_coordinate' not in data or 'y_coordinate' not in data:
         abort(400, description="Missing virtual_object_id, config_id, x_coordinate or y_coordinate ")
@@ -121,7 +139,8 @@ def add_virtual_configuration():
     db.session.commit()
 
     # send virtual configuration change to physical products using socket connection
-    socketio.emit('new_virtual_configuration', data)
+    print(new_VirtualConfiguration.to_dict())
+    socketio.emit('new_virtual_configuration', new_VirtualConfiguration.to_dict())
 
     return jsonify(new_VirtualConfiguration.to_dict()), 201  # Return the created object
 

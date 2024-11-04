@@ -23,7 +23,7 @@ class PhysicalObject(Base):
             'physical_object_id': self.physical_object_id,
             'virtual_object_id': self.virtual_object_id,
             'object_name': self.object_name,
-            'created_at': self.created_at,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
             'marker_id': self.marker_id
     }
 
@@ -43,7 +43,7 @@ class VirtualObject(Base):
         return {
             'virtual_object_id': self.virtual_object_id,
             'object_name': self.object_name,
-            'created_at': self.created_at,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
     } 
 
 # Table: Configurations
@@ -65,7 +65,7 @@ class Configuration(Base):
             'config_id': self.config_id,
             'config_type': self.config_type,
             'config_name': self.config_name,
-            'created_at': self.created_at
+            'created_at': self.created_at.isoformat() if self.created_at else None
     } 
 
 # Table: Physical Object Configurations
@@ -91,8 +91,8 @@ class PhysicalObjectConfiguration(Base):
             "config_id": self.config_id,
             "x_coordinate": self.x_coordinate,
             "y_coordinate": self.y_coordinate,
-            "created_at": self.created_at,
-            "last_updated": self.last_updated
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "last_updated": self.last_updated.isoformat() if self.created_at else None,
     } 
 # Table: Virtual Object Configurations
 class VirtualObjectConfiguration(Base):
@@ -117,8 +117,8 @@ class VirtualObjectConfiguration(Base):
             'config_id': self.config_id,
             'x_coordinate': self.x_coordinate,
             'y_coordinate': self.y_coordinate,
-            'created_at': self.created_at,
-            'last_updated': self.last_updated
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'last_updated': self.last_updated.isoformat() if self.created_at else None
     } 
 
 # Table: Mimic Sync Log

@@ -19,13 +19,13 @@ def disconnect():
 def message(data):
     print("Message from server:", data)
 
-@sio.on('configuration_update')
-def handle_configurationUpdate(data):
-    print('Received new configuration update:', data)
-
 @sio.on('virtual_configuation_change')
 def handle_VconfigurationChange(data):
     print(f'received virtual configuration update: {data}')
+
+@sio.on("NewVirtualObject")
+def handle_NewVirtualObject(data):
+    print("New virtual Object Detected:", data)
 
 @sio.on('physical_configuration_change')
 def handle_physicalConfigurationChange(data):

@@ -1,5 +1,6 @@
 from flask import Flask
 from flask_socketio import SocketIO, send, emit
+from webSocket import socketio
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your_secret_key'
