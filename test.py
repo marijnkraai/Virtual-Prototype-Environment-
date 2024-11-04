@@ -24,8 +24,15 @@ def handle_configurationUpdate(data):
     print('Received new configuration update:', data)
 
 @sio.on('virtual_configuation_change')
-def handle_configurationChange(data):
+def handle_VconfigurationChange(data):
     print(f'received virtual configuration update: {data}')
+
+@sio.on('physical_configuration_change')
+def handle_physicalConfigurationChange(data):
+    print(f'received physical configuration update: {data}')
+
+
+
 
 try:
     sio.connect('http://127.0.0.1:5000')

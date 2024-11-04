@@ -1,11 +1,12 @@
 import cv2
 import numpy as np
-from api.db_connect import Base, engine, session
-from api.db_config import API_BASEURI
-from api.models import PhysicalObject, Configuration, PhysicalObjectConfiguration, Product, VirtualObject, VirtualObjectConfiguration
+from db_connect import Base, engine, session
+from db_config import API_BASEURI
+from models import PhysicalObject, Configuration, PhysicalObjectConfiguration, Product, VirtualObject, VirtualObjectConfiguration
 from sqlalchemy import text
 import requests
 import simplejson as json 
+from flask_sqlalchemy import SQLAlchemy
 
 def calculate_Transform_Matrix (width, height, aruco_corners, aruco_ids):
     marker_dict = {1: None, 2: None, 3: None, 4: None}
@@ -33,6 +34,7 @@ def calculate_Transform_Matrix (width, height, aruco_corners, aruco_ids):
     # Get the perspective transform matrix
     M = cv2.getPerspectiveTransform(src_points, dst_points)
     return M
+
 
 def filter_none_values(data):
     if isinstance(data, dict):
@@ -73,16 +75,18 @@ def newConfiguration(type, name):
         config_type=type,
         config_name=name
     )
+    
     # Use the postRequest function to send the new configuration to the server
     response = postRequest(newConfig,"configurations")
     print(f"response: {response}")
+
+    session.add(newConfig)
+    session.flush()
+
     # Check if the response contains an error
     if 'error' in response:
         print("Error occurred:", response['error'])
-        # Add details from DB response
-    else:
-        newConfig.config_id = response.get("config_id")  # Update product_id if present in the response
-        #TODO add created_at
+
     return newConfig  # Return the newly created configuration object
     
 def newProduct(name, configuration):    
@@ -93,13 +97,16 @@ def newProduct(name, configuration):
     )
     # Use the postRequest function to send the new product to the server
     response = postRequest(newProduct, "products")
+
+    #Commit after postrequest, to not send id + autoKeys to API, TODO, improve JSon to id and autoKeys
+    session.add(newProduct)
+    session.flush()
+    print("Added new Product to DB")  # Debugging line
+
     # Check if the response contains an error
     if 'error' in response:
         print("Error occurred:", response['error'])
-    # Add details from DB response
-    if response:
-        newProduct.product_id = response.get("product_id")  # Update product_id if present in the response
-        #TODO, add created_at 
+
     return newProduct  # Return the new product object
 
 def newPhysicalObject(vObjID, name, markerID):
@@ -108,21 +115,22 @@ def newPhysicalObject(vObjID, name, markerID):
         object_name = name,
         marker_id = markerID
     )
-    # Send a Post request to the API
+
+    # Send a Post request to the API, to emit to 
     response = postRequest(newPhysicalObject, "physical_objects")
+
+    #Commit after postrequest, to not send id + autoKeys to API, TODO, improve JSon to id and autoKeys
+    session.add(newPhysicalObject)
+    session.flush()
+    print("Added new Physical Object to DB")  # Debugging line
 
     # Check if the response contains an error
     if 'error' in response:
         print("Error occurred:", response['error'])
 
-    # Add details from DB response
-    if response:
-        newPhysicalObject.physical_object_id = response.get("physical_object_id")  # Update physical object id if present in the response
-        #TODO, add created_at
-
     return newPhysicalObject  # Return the new product object
 
-def newPhysicalObjectConfig(pObjID, configID, x, y):
+def newPhysicalObjectConfig(pObjID,configID, x, y):
     newPhysicalObjectConfig = PhysicalObjectConfiguration(
         physical_object_id = pObjID,
         config_id = configID,
@@ -131,13 +139,15 @@ def newPhysicalObjectConfig(pObjID, configID, x, y):
     )
     # Send a Post request to the API
     response = postRequest(newPhysicalObjectConfig, "physical_configurations")
+
+    #Commit after postrequest, to not send id + autoKeys to API, TODO, improve JSon to id and autoKeys
+    session.add(newPhysicalObjectConfig)
+    session.flush()
+    print("Added new Physical Object Config to DB")  # Debugging line
+
     # Check if the response contains an error
     if 'error' in response:
         print("Error occurred:", response['error'])
-    # Add details from DB response
-    if response:
-        newPhysicalObjectConfig.physical_object_config_id = response.get("physical_object_config_id")  # Update physical object id if present in the response
-        #TODO, add created_at & updated at
 
     return newPhysicalObjectConfig  # Return the new product object
 
@@ -169,7 +179,7 @@ def main():
     this_aruco_parameters = cv2.aruco.DetectorParameters()
 
     # Start videocapture (0 for integrated webcam, > 1 or 2 or 3 for external webcam)
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
 
     if not cap.isOpened():
         print("webcam couldnt open")
@@ -288,16 +298,13 @@ def main():
 
                             #TODO, API post request to create new configuration
                             # Create new configuration for this object
-                            new_PhysicalConfig = Configuration(config_type='physical', config_name=f"config(add number)")
-                            session.add(new_PhysicalConfig)
-                            session.flush()
 
-                            new_PhysicalObjectConfig = PhysicalObjectConfiguration(
-                                physical_object_id=physicalObject.physical_object_id,
-                                config_id=new_PhysicalConfig.config_id,
-                                x_coordinate=new_x,
-                                y_coordinate=new_y
-                            )
+                            new_PhysicalConfig = newConfiguration('physical', "NewConfiguration") #TODO, dynamically add config name
+                            new_PhysicalObjectConfig = newPhysicalObjectConfig(
+                                physicalObject.physical_object_id, 
+                                new_PhysicalConfig.config_id,
+                                new_x,
+                                new_y)
 
                             # Update current configuration
                             currentProduct.current_config = new_PhysicalConfig.config_id
@@ -306,6 +313,8 @@ def main():
                             # No significant change, only update coordinates in memory
                             configuration.x_coordinate = new_x
                             configuration.y_coordinate = new_y
+                        
+
                     else: #Physical object already exists::
                            
                         #Get virtual objects from database:
@@ -313,16 +322,15 @@ def main():
                         #VirtualObjectID = mapPhysicaltoVirtual(Physicalobject.marker_id)
 
                         #Add placeholder virtual object in database for connecting to physical objects (only debugging)
-                        new_virtual_object = VirtualObject(object_name = 'Test object for physical environment')
-                        session.add(new_virtual_object)
-                        session.flush()
-
 
                         new_physical_object = newPhysicalObject(
-                            new_virtual_object.virtual_object_id,
-                            f'Object {len(physicalObjects)+1}',
+                            7,
+                            f'Object{len(physicalObjects)+1}',
                             int(marker_id) 
                         )
+
+                        # Add the new object to an array to bulk save at the end of the frame
+                        new_physical_objects.append(new_physical_object)
 
                         # Add the new object to the map to avoid re-adding in the same loop
                         physicalObjects.append(new_physical_object)
@@ -335,7 +343,10 @@ def main():
                             int(transformed_y)
                         )
 
-                # Step 2: Bulk save all new objects and configurations at once
+                        #Add the new configuratin to an array to bulk save at the end of the frame
+                        new_configurations.append(init_physical_object_conf)
+
+                #Bulk save all new objects and configurations at once
                 if new_physical_objects:
                     session.bulk_save_objects(new_physical_objects)
                 if new_configurations:
