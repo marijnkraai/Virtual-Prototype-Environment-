@@ -7,10 +7,22 @@ import requests
 import socketio
 import threading
 import json
+import queue
+import asyncio
 
 # Initialize a Socket.IO client
 sio = socketio.Client()
+
 physicalObjects = []
+physicalObject_states = {}
+currentConfig = None
+currentProduct = None 
+
+# Define the queue
+task_queue = queue.Queue()
+#db_lock = threading.Lock()
+
+
 
 # Built-in connect event handler
 @sio.event
@@ -22,25 +34,83 @@ def connect():
 def disconnect():
     print("Disconnected from the server")
 
-
+#Listens for incoming event when New Virtual Objects are created in unity and creates new Physical objects in Cache and in the DB
+#The physical Objects created will later be assigned a marker_id when markers are detected
 @sio.on("newVirtualObjectResponse")
 def handle_new_virtual_object_response(data):
+    # Your database operations here
     print("New virtual Object Created:", data)
     data = json.loads(data)
     #create new physical object, marker id 0, to be set later
-    pObjfromVobj = newPhysicalObject(int(data["virtual_object_id"]), f'Object{len(physicalObjects)+1}', 0)
-    print(pObjfromVobj)
-    physicalObjects.append(pObjfromVobj)
+    vObjID = int(data["virtual_object_id"])
 
+    # Add the task to the queue instead of directly accessing the DB
+    task_queue.put({
+        "type": "create",
+        "vObjID": vObjID,
+        "name": f'Object{len(physicalObjects)+1}',
+    })
+
+#Listens for incoming event over WS when a New Virtual configuration is created. If this is the case, the virtual object
+#in the virtual environment has changed its position, so the corresponding physical object should be moved to the same position
+@sio.on("newVirtualConfigResponse")
+def handle_new_virtual_config_response(data):
+    print("New Virtual Configuration Detected", data)
+    data = json.loads(data)
+    movedVirtualObjectID = int(data["virtual_object_id"])
+    x, y = int(data["x_coordinate"]), int(data["y_coordinate"])
+
+    # Add the task to the queue to update the object
+    task_queue.put({
+        "type": "update_config",
+        "vObjID": movedVirtualObjectID,
+        "x": x,
+        "y": y,
+    })
+
+    #set state of physical object to isMoving
+    #if physicalObject_states[pObj] == 'stationary':
+        #physicalObject_states[pObj] = 'moving'
+
+    #create new configuration for this physical object in main thread TODO, dynamically add config name
+    #new_PhysicalConfig = newConfiguration('physical', "NewConfiguration", sessionMain) 
+
+    #create new physical object configuration in main thread, 
+    #so that it creates the necessary foreign key relationships in main thread
+
+    #new_PhysicalObjectConfig = newPhysicalObjectConfig(pObj.physical_object_id, new_PhysicalConfig.config_id, movedVirtualObjectX, movedVirtualObjectY, sessionMain)
     
+    #Set new current config 
+    #global currentConfig
+    #currentConfig = new_PhysicalConfig
+
+    # Update current configuration
+    #urrentProduct.current_config = new_PhysicalConfig.config_id
+    #move physical object to new location 
+    #print(f"Moving physical object from to {movedVirtualObjectID, movedVirtualObjectY}")
+
+    #set state of physical object to stationary
+
 
 @sio.on('physical_configuration_change')
 def handle_physicalConfigurationChange(data):
     print(f'received physical configuration update: {data}')
 
+#def movePhysicalObject (physicalObj, newX, newY. session):
+    #Get current position of physical object
+    #Move X carve to current position
+    #Activate the electromagnet over serial connection
+    #Move X carve to new position
 
 
-
+#finds the physical object from an array of physical objects with a certain virtual object id
+def getPobjfromVobj(vObjID, physicalObjects):
+    for pObj in physicalObjects:
+        if pObj.virtual_object_id == vObjID:
+            print(f"physical object found with virtual id: {vObjID}")
+            return pObj     
+    print(f"could not find physical object with virtual id: {vObjID}")
+    
 def calculate_Transform_Matrix (width, height, aruco_corners, aruco_ids):
     marker_dict = {1: None, 2: None, 3: None, 4: None}
     for i, marker_id in enumerate(aruco_ids):
@@ -102,7 +172,7 @@ def postRequest(obj, endpoint):
         return {"error": str(e)}
 
 
-def newConfiguration(type, name):
+def newConfiguration(type, name, session):
     # Create a new Configuration object with the provided type and name
     newConfig = Configuration(
         config_type=type,
@@ -110,19 +180,19 @@ def newConfiguration(type, name):
     )
     
     # Use the postRequest function to send the new configuration to the server
-    response = postRequest(newConfig,"configurations")
-    print(f"response: {response}")
+    #response = postRequest(newConfig,"configurations")
+    #print(f"response: {response}")
 
     session.add(newConfig)
     session.flush()
 
     # Check if the response contains an error
-    if 'error' in response:
-        print("Error occurred:", response['error'])
+    #if 'error' in response:
+        #print("Error occurred:", response['error'])
 
     return newConfig  # Return the newly created configuration object
     
-def newProduct(name, configuration):    
+def newProduct(name, configuration, session):    
     # Create a new Product object with the provided name and the configuration ID
     newProduct = Product(
         product_name=name,
@@ -138,32 +208,24 @@ def newProduct(name, configuration):
 
     # Check if the response contains an error
     if 'error' in response:
-        print("Error occurred:", response['error'])
+        print("Error occurred:", response['error']) 
 
     return newProduct  # Return the new product object
 
-def newPhysicalObject(vObjID, name, markerID):
+def newPhysicalObject(vObjID, name, markerID, session):
     newPhysicalObject = PhysicalObject(
         virtual_object_id = vObjID,
         object_name = name,
         marker_id = markerID
     )
 
-    # Send a Post request to the API, to emit to 
-    #response = postRequest(newPhysicalObject, "physical_objects")
-
-    #Commit after postrequest, to not send id + autoKeys to API, TODO, improve JSon to id and autoKeys
     session.add(newPhysicalObject)
     session.commit()
     print("Added new Physical Object")  # Debugging line
 
-    # Check if the response contains an error
-    #if 'error' in response:
-        #print("Error occurred:", response['error'])
-
     return newPhysicalObject  # Return the new product object
 
-def newPhysicalObjectConfig(pObjID,configID, x, y):
+def newPhysicalObjectConfig(pObjID,configID, x, y, session):
     newPhysicalObjectConfig = PhysicalObjectConfiguration(
         physical_object_id = pObjID,
         config_id = configID,
@@ -171,16 +233,17 @@ def newPhysicalObjectConfig(pObjID,configID, x, y):
         y_coordinate = y
     )
     # Send a Post request to the API
-    response = postRequest(newPhysicalObjectConfig, "physical_configurations")
+    #response = postRequest(newPhysicalObjectConfig, "physical_configurations")
 
     #Commit after postrequest, to not send id + autoKeys to API, TODO, improve JSon to id and autoKeys
     session.add(newPhysicalObjectConfig)
-    session.flush()
-    print("Added new Physical Object Config to DB")  # Debugging line
+    session.commit()
+    #session.flush()
+    print(f"Added new Physical Object Config to DB with x,y {x,y}")  # Debugging line
 
     # Check if the response contains an error
-    if 'error' in response:
-        print("Error occurred:", response['error'])
+    #if 'error' in response:
+        #print("Error occurred:", response['error'])
 
     return newPhysicalObjectConfig  # Return the new product object
 def main():
@@ -191,13 +254,14 @@ def main():
         except Exception as e:
             print(f"Connection failed: {e}")
         
-        sio.wait()
+        #sio.wait()
 
     def mainCode():
         ### variable definition ###
         productName = "Marijns Product"
         frame_count = 0
         matrixHistory = []
+        
 
         transformMatrix = np.ones((3,3))
         GlobalTransform_Matrix = np.ones((3,3))
@@ -211,20 +275,22 @@ def main():
         Base.metadata.create_all(engine)
 
         #create initial configuration
-        currentConfig = newConfiguration('physical', "Initial Physical Configuration")
+        global currentConfig
+        currentConfig = newConfiguration('physical', "Initial Physical Configuration", session)
         session.commit()
         
         # Insert a new product with the initial configuration
-        currentProduct = newProduct(productName, currentConfig)
+        global currentProduct
+        currentProduct = newProduct(productName, currentConfig, session)
         session.commit()
 
         # Start videocapture (0 for integrated webcam, > 1 or 2 or 3 for external webcam)
-        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
 
         if not cap.isOpened():
             print("webcam couldnt open")
 
-    # Main Frame Loop:
+        # Main Frame Loop:
         while(True):
             # Capture frame-by-frame
             N = 100 
@@ -321,23 +387,81 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.5, (0, 255, 0), 2)
                         
-                        for pObj in physicalObjects:
-                            if pObj.marker_id != 0: #Physical object is already assigned to a virtual object
-                                configuration = pObj.configurations[len(pObj.configurations) -1] #last detected configuration
-                                old_x = configuration.x_coordinate
-                                old_y = configuration.y_coordinate
-                                new_x = int(transformed_x)
-                                new_y = int(transformed_y)
+                        while not task_queue.empty():
+                            task = task_queue.get()
+                            
+                            # Process each task based on its type
+                            if task["type"] == "create":
+                                # Assuming newPhysicalObject is defined elsewhere and returns a physical object
+                                pObj = newPhysicalObject(task["vObjID"], task["name"], 0, session)
 
-                                # Check if the position error exceeds the threshold
-                                if abs(new_x - old_x) > threshold or abs(new_y - old_y) > threshold:
+                                physicalObjects.append(pObj)  # Update your in-memory list
+                                
+                                task_queue.task_done()  # Mark task as done
+                            
+                            elif task["type"] == "update_config":
+                                # Assuming getPobjfromVobj is defined to retrieve the physical object
+                                pObj = getPobjfromVobj(task["vObjID"], physicalObjects)
+                                if pObj:
+                                    currentConfig
+                                    currentProduct
+                                    newPConfigFromVConfig = newConfiguration("physical","pConfigFromvConfig", session)
+                                    newPObjConfigFromVObjConfig = newPhysicalObjectConfig(pObj.physical_object_id, newPConfigFromVConfig.config_id, task["x"], task["y"], session)  # Update the object in session
+                                    
+
+                                    currentConfig = newPConfigFromVConfig
+
+                                    # Update current configuration
+                                    currentProduct.current_config = newPConfigFromVConfig.config_id
+                                    session.commit()
+                                    #updated_objects.append((currentProduct))
+
+                                    #set state of physical object to moving
+                                    physicalObject_states[pObj.physical_object_id] = 'moving'
+
+                                task_queue.task_done()  # Mark task as done
+
+
+                  
+                        for pObj in physicalObjects:
+                            #assign marker id to physical objects 
+                            if pObj.marker_id == 0:
+                                #assign marker_id to physical object
+                                pObj.marker_id = marker_id
+                                new_physical_objects.append((pObj)) #Wrap physical object in a tuple
+
+                            if len(pObj.configurations) == 0:
+                                continue
+
+                            #check position of marker against configuration to see if the object has moved, either manual or automatic    
+                            configuration = pObj.configurations[len(pObj.configurations) -1] #last detected configuration
+                            old_x = configuration.x_coordinate
+                            old_y = configuration.y_coordinate
+                            new_x = int(transformed_x)
+                            new_y = int(transformed_y)
+                            
+                            # Check if the position error exceeds the threshold and if object is not moving
+                            #TODO, add a buffer so that inconcistencies in the final position of a moved physical object do not create new configurations
+                            if ((abs(new_x - old_x) > threshold or abs(new_y - old_y) > threshold)): #TODO, add stationary time check
+                                print('physical object has moved or needs to be moved')
+                                #Check if object needs to be moved automatically 
+                                if physicalObject_states[pObj.physical_object_id] == 'moving':
+                                    print("Moving physical object to new location")
+                                    # move to location
+                                    # Experimental function (send g code over serial), 
+                                    # 
+                                    
+                                if physicalObject_states[pObj.physical_object_id] == 'stationary':
+                                    print("Moved physical object by hand")
+                                    #Physical object moved manually
                                     # Create new configuration for this object
-                                    new_PhysicalConfig = newConfiguration('physical', "NewConfiguration") #TODO, dynamically add config name
+                                    new_PhysicalConfig = newConfiguration('physical', "NewConfiguration", session) #TODO, dynamically add config name
                                     new_PhysicalObjectConfig = newPhysicalObjectConfig(
                                         pObj.physical_object_id, 
                                         new_PhysicalConfig.config_id,
                                         new_x,
-                                        new_y)
+                                        new_y, 
+                                        session)
                                     
                                     #Set new current config 
                                     currentConfig = new_PhysicalConfig
@@ -345,26 +469,11 @@ def main():
                                     # Update current configuration
                                     currentProduct.current_config = new_PhysicalConfig.config_id
                                     updated_objects.append((new_PhysicalConfig, new_PhysicalObjectConfig, currentProduct))
-                                else:
-                                    # No significant change, only update coordinates in memory
-                                    configuration.x_coordinate = new_x
-                                    configuration.y_coordinate = new_y
+
+                                    # Send Physical configuration change to Unity using WebSockets
                             else:
-                                #assign marker_id to physical object
-                                pObj.marker_id = marker_id
-                                updated_objects.append(pObj)
-
-                                # Prepare initial configuration for the new object
-                                init_physical_object_conf = newPhysicalObjectConfig(
-                                    pObj.physical_object_id,
-                                    currentConfig.config_id,  # Assuming currentConfig is set before loop
-                                    int(transformed_x),
-                                    int(transformed_y)
-                                )
-
-                                #Add the new configuratin to an array to bulk save at the end of the frame
-                                new_configurations.append(init_physical_object_conf)
-
+                                #set state to stationary if no change has been detected
+                                physicalObject_states[pObj.physical_object_id] == 'stationary'
                     #Bulk save all new objects and configurations at once
                     if new_physical_objects:
                         session.bulk_save_objects(new_physical_objects)
@@ -384,31 +493,20 @@ def main():
             # Display the resulting frame
             cv2.imshow('frame', frame)
             frame_count = frame_count + 1
-            print(f"frameCount: {frame_count}")
-
+            #print(f"frameCount: {frame_count}")
+            #print("new frame")
             # If "q" is pressed on the keyboard, break the loop
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break 
-            
+
         # Close down the video stream
         cap.release()
         cv2.destroyAllWindows()
         session.close()
 
+    start_socketio()
+    mainCode()
 
-    # Create threads for both Socket.IO and main code
-    socketio_thread = threading.Thread(target=start_socketio)
-    main_code_thread = threading.Thread(target=mainCode)
-
-    # Start both threads
-    socketio_thread.start()
-    main_code_thread.start()
-
-    # Optional: Wait for threads to complete (if desired)
-    socketio_thread.join()
-    main_code_thread.join()
-    
-   
 if __name__ == '__main__':
   main()
   

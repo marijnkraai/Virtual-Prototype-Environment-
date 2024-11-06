@@ -4,7 +4,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_socketio import SocketIO, emit
 from sqlalchemy import select
 from models import PhysicalObject, Configuration, VirtualObjectConfiguration, VirtualObject, PhysicalObjectConfiguration, Product # Import the common model
-from db_connect import Base, session, engine
+from db_connect import Base, engine
 import json
 from webSocket import socketio
 from api_init import app
@@ -39,6 +39,11 @@ def handle_disconnect():
 def handle_new_virtual_object(data):
     print("New Virtual Object detected", data)
     emit("newVirtualObjectResponse", data, broadcast=True)  # Emit the response back to the client
+
+@socketio.on("newVirtualConfigMessage")
+def handle_new_virtual_config(data):
+    print("New Virtual Config detected", data)
+    emit("newVirtualConfigResponse", data, broadcast= True)
 
 
 @app.route('/products', methods = ['POST'])
