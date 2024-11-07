@@ -9,6 +9,9 @@ import threading
 import json
 import queue
 import asyncio
+from gCodeSender import sendGRBL, createSerialConnection, setupMachine, MoveToPosition
+from serial_config import BAUDRATE, SERIALPORTGCODE
+
 
 # Initialize a Socket.IO client
 sio = socketio.Client()
@@ -20,6 +23,7 @@ currentProduct = None
 
 # Define the queue
 task_queue = queue.Queue()
+conn = None
 #db_lock = threading.Lock()
 
 
@@ -261,6 +265,8 @@ def main():
         productName = "Marijns Product"
         frame_count = 0
         matrixHistory = []
+        conn = createSerialConnection(SERIALPORTGCODE, BAUDRATE)
+        
         
 
         transformMatrix = np.ones((3,3))
@@ -270,17 +276,16 @@ def main():
         this_aruco_parameters = cv2.aruco.DetectorParameters()
         height = 850 #work area height in cm
         width = 850 #work area width in cm
+        N = 100 
 
         # Create tables in the database if they do not exist already
         Base.metadata.create_all(engine)
 
         #create initial configuration
-        global currentConfig
         currentConfig = newConfiguration('physical', "Initial Physical Configuration", session)
         session.commit()
         
         # Insert a new product with the initial configuration
-        global currentProduct
         currentProduct = newProduct(productName, currentConfig, session)
         session.commit()
 
@@ -292,11 +297,9 @@ def main():
 
         # Main Frame Loop:
         while(True):
-            # Capture frame-by-frame
-            N = 100 
-            # This method returns True/False as well
-            # as the video frame.
+            #read frame from from videocapture
             ret, frame = cap.read() 
+
             # Warp the perspective to create the new window
             warped_image = cv2.warpPerspective(frame, GlobalTransform_Matrix, (width, height)) 
 
@@ -304,187 +307,200 @@ def main():
             (corners, ids, rejected) = cv2.aruco.detectMarkers(
             frame, this_aruco_dictionary, parameters=this_aruco_parameters)
 
-            # Check that ArUco marker was detected
-            if ids is not None and len(ids) > 0: 
-                # Flatten the ArUco IDs list
-                ids = ids.flatten() 
-                if frame_count < N: # calculate transformation matrix
-                    # check if all corners are detected
-                    if corner_ids.issubset(ids):
-                        
-                        #calculate transformmatrix
-                        transformMatrix = calculate_Transform_Matrix(width,height,corners,ids)
+            # Make sure aruco markers are detected
+            if ids is None or len(ids) > 0:
+                print("No makers detected")
+                break 
+        
+            # Flatten the ArUco IDs list
+            ids = ids.flatten() 
+            if frame_count < N: # calculate transformation matrix
+                # check if all corners are detected
+                if corner_ids.issubset(ids):
+                    #calculate transformmatrix
+                    transformMatrix = calculate_Transform_Matrix(width,height,corners,ids)
 
-                        # Add the transformation matrix to the list
-                        matrixHistory.append(transformMatrix)
-                        
-                        #calculate average matrix
-                        avg_matrix = np.mean(np.array(matrixHistory), axis=0)
-
-                        # Normalize the matrix from Homographic
-                        #divide by the bottom-right element (to maintain scaling)
-                        avg_matrix /= avg_matrix[2, 2]
-                        GlobalTransform_Matrix = avg_matrix
-                        print(frame_count)
-
-                else: 
-                    ids = ids.tolist()
-                    filtered_corners = []
-                    filtered_ids = []
-                    new_physical_objects = []
-                    new_configurations = []
-                    updated_objects = []
-                    threshold = int(width/100) #1% accuracy
-
-                    # filter corner ids from ids
-                    for marker_corner, marker_id in zip(corners, ids):
-                        if marker_id not in list(corner_ids):
-                            filtered_corners.append(marker_corner)
-                            filtered_ids.append(marker_id)
-                            
-                    # Loop over the detected markers
-                    for (marker_corner, marker_id) in zip(filtered_corners, filtered_ids):
-                        # Extract the marker corners
-                        corners = marker_corner.reshape((4, 2))
-                        (top_left, top_right, bottom_right, bottom_left) = corners
-                        
-                        # Convert the (x,y) coordinate pairs to integers
-                        top_right = (int(top_right[0]), int(top_right[1]))
-                        bottom_right = (int(bottom_right[0]), int(bottom_right[1]))
-                        bottom_left = (int(bottom_left[0]), int(bottom_left[1]))
-                        top_left = (int(top_left[0]), int(top_left[1]))
+                    # Add the transformation matrix to the list
+                    matrixHistory.append(transformMatrix)
                     
-                        # Draw the bounding box of the ArUco detection
-                        cv2.line(frame, top_left, top_right, (0, 255, 0), 2)
-                        cv2.line(frame, top_right, bottom_right, (0, 255, 0), 2)
-                        cv2.line(frame, bottom_right, bottom_left, (0, 255, 0), 2)
-                        cv2.line(frame, bottom_left, top_left, (0, 255, 0), 2)
-                        
-                        # Calculate and draw the center of the ArUco marker
-                        center_x = int((top_left[0] + bottom_right[0]) / 2.0)
-                        center_y = int((top_left[1] + bottom_right[1]) / 2.0)
-                        originalCenterV = [[center_x], [center_y], [1]] #use homogenous coordinates
+                    #calculate average matrix
+                    avg_matrix = np.mean(np.array(matrixHistory), axis=0)
 
-                        #calculate and draw the center of corrected Center of the ArUco marker
-                        transformedCenterV = np.dot(transformMatrix, originalCenterV)
-                        transformed_x = transformedCenterV[0] / transformedCenterV[2] # normalize tansformed x
-                        transformed_y = transformedCenterV[1] / transformedCenterV[2] # normalize transformed y
+                    # Normalize the matrix from Homographic
+                    #divide by the bottom-right element (to maintain scaling)
+                    avg_matrix /= avg_matrix[2, 2]
+                    GlobalTransform_Matrix = avg_matrix
+                    print(frame_count)
 
-                        transformedCenter = (int(transformed_x), int(transformed_y))
-                        cv2.circle(warped_image, transformedCenter, 4, (0,0,255), -1)
-                        
-                        # Draw the ArUco marker ID on the video frame
-                        # The ID is always located at the top_left of the ArUco marker
-                        cv2.putText(frame, str(marker_id), 
-                        (top_left[0], top_left[1] - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5, (0, 255, 0), 2)
+            else: 
+                ids = ids.tolist()
+                filtered_corners = []
+                filtered_ids = []
+                new_physical_objects = []
+                new_configurations = []
+                updated_objects = []
+                threshold = int(width/100) #1% accuracy
+                setupMachine(conn)
+                MoveToPosition(int(300 * 1.18), int(300 * 0.85), conn)
 
-                        # Draw the ArUco x, y location on the video frame
-                        # The ID is always located at the top_left of the ArUco marker
-                        cv2.putText(warped_image, str(transformedCenter), 
-                        (transformedCenter[0], transformedCenter[1] - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5, (0, 255, 0), 2)
+                # filter corner ids from ids
+                for marker_corner, marker_id in zip(corners, ids):
+                    if marker_id not in list(corner_ids):
+                        filtered_corners.append(marker_corner)
+                        filtered_ids.append(marker_id)
                         
-                        while not task_queue.empty():
-                            task = task_queue.get()
+                # Loop over the detected markers
+                for (marker_corner, marker_id) in zip(filtered_corners, filtered_ids):
+                    # Extract the marker corners
+                    corners = marker_corner.reshape((4, 2))
+                    (top_left, top_right, bottom_right, bottom_left) = corners
+                    
+                    # Convert the (x,y) coordinate pairs to integers
+                    top_right = (int(top_right[0]), int(top_right[1]))
+                    bottom_right = (int(bottom_right[0]), int(bottom_right[1]))
+                    bottom_left = (int(bottom_left[0]), int(bottom_left[1]))
+                    top_left = (int(top_left[0]), int(top_left[1]))
+                
+                    # Draw the bounding box of the ArUco detection
+                    cv2.line(frame, top_left, top_right, (0, 255, 0), 2)
+                    cv2.line(frame, top_right, bottom_right, (0, 255, 0), 2)
+                    cv2.line(frame, bottom_right, bottom_left, (0, 255, 0), 2)
+                    cv2.line(frame, bottom_left, top_left, (0, 255, 0), 2)
+                    
+                    # Calculate and draw the center of the ArUco marker
+                    center_x = int((top_left[0] + bottom_right[0]) / 2.0)
+                    center_y = int((top_left[1] + bottom_right[1]) / 2.0)
+                    originalCenterV = [[center_x], [center_y], [1]] #use homogenous coordinates
+
+                    #calculate and draw the center of corrected Center of the ArUco marker
+                    transformedCenterV = np.dot(transformMatrix, originalCenterV)
+                    transformed_x = transformedCenterV[0] / transformedCenterV[2] # normalize tansformed x
+                    transformed_y = transformedCenterV[1] / transformedCenterV[2] # normalize transformed y
+
+                    transformedCenter = (int(transformed_x), int(transformed_y))
+                    cv2.circle(warped_image, transformedCenter, 4, (0,0,255), -1)
+                    
+                    # Draw the ArUco marker ID on the video frame
+                    # The ID is always located at the top_left of the ArUco marker
+                    cv2.putText(frame, str(marker_id), 
+                    (top_left[0], top_left[1] - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (0, 255, 0), 2)
+
+                    # Draw the ArUco x, y location on the video frame
+                    # The ID is always located at the top_left of the ArUco marker
+                    cv2.putText(warped_image, str(transformedCenter), 
+                    (transformedCenter[0], transformedCenter[1] - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (0, 255, 0), 2)
+
+                    
+                    
+                    while not task_queue.empty():
+                        task = task_queue.get()
+                        
+                        # Process each task based on its type
+                        if task["type"] == "create":
+                            # Assuming newPhysicalObject is defined elsewhere and returns a physical object
+                            pObj = newPhysicalObject(task["vObjID"], task["name"], 0, session)
+
+                            physicalObjects.append(pObj)  # Update your in-memory list
                             
-                            # Process each task based on its type
-                            if task["type"] == "create":
-                                # Assuming newPhysicalObject is defined elsewhere and returns a physical object
-                                pObj = newPhysicalObject(task["vObjID"], task["name"], 0, session)
-
-                                physicalObjects.append(pObj)  # Update your in-memory list
+                            task_queue.task_done()  # Mark task as done
+                        
+                        elif task["type"] == "update_config":
+                            # Assuming getPobjfromVobj is defined to retrieve the physical object
+                            pObj = getPobjfromVobj(task["vObjID"], physicalObjects)
+                            if pObj:
+                                currentConfig
+                                currentProduct
+                                newPConfigFromVConfig = newConfiguration("physical","pConfigFromvConfig", session)
+                                newPObjConfigFromVObjConfig = newPhysicalObjectConfig(pObj.physical_object_id, newPConfigFromVConfig.config_id, task["x"], task["y"], session)  # Update the object in session
                                 
-                                task_queue.task_done()  # Mark task as done
-                            
-                            elif task["type"] == "update_config":
-                                # Assuming getPobjfromVobj is defined to retrieve the physical object
-                                pObj = getPobjfromVobj(task["vObjID"], physicalObjects)
-                                if pObj:
-                                    currentConfig
-                                    currentProduct
-                                    newPConfigFromVConfig = newConfiguration("physical","pConfigFromvConfig", session)
-                                    newPObjConfigFromVObjConfig = newPhysicalObjectConfig(pObj.physical_object_id, newPConfigFromVConfig.config_id, task["x"], task["y"], session)  # Update the object in session
-                                    
 
-                                    currentConfig = newPConfigFromVConfig
+                                currentConfig = newPConfigFromVConfig
 
-                                    # Update current configuration
-                                    currentProduct.current_config = newPConfigFromVConfig.config_id
-                                    session.commit()
-                                    #updated_objects.append((currentProduct))
+                                # Update current configuration
+                                currentProduct.current_config = newPConfigFromVConfig.config_id
+                                session.commit()
+                                #updated_objects.append((currentProduct))
 
-                                    #set state of physical object to moving
-                                    physicalObject_states[pObj.physical_object_id] = 'moving'
+                                #set state of physical object to moving
+                                physicalObject_states[pObj.physical_object_id] = 'moving'
 
-                                task_queue.task_done()  # Mark task as done
+                            task_queue.task_done()  # Mark task as done
 
 
-                  
-                        for pObj in physicalObjects:
-                            #assign marker id to physical objects 
-                            if pObj.marker_id == 0:
-                                #assign marker_id to physical object
-                                pObj.marker_id = marker_id
-                                new_physical_objects.append((pObj)) #Wrap physical object in a tuple
+                
+                    for pObj in physicalObjects:
+                        #assign marker id to physical objects 
+                        if pObj.marker_id == 0:
+                            #assign marker_id to physical object
+                            pObj.marker_id = marker_id
+                            new_physical_objects.append((pObj)) #Wrap physical object in a tuple
 
-                            if len(pObj.configurations) == 0:
-                                continue
+                        #Check if the object has configurations, because configurations are being assigned async
+                        if len(pObj.configurations) == 0:
+                            continue
 
-                            #check position of marker against configuration to see if the object has moved, either manual or automatic    
-                            configuration = pObj.configurations[len(pObj.configurations) -1] #last detected configuration
-                            old_x = configuration.x_coordinate
-                            old_y = configuration.y_coordinate
-                            new_x = int(transformed_x)
-                            new_y = int(transformed_y)
-                            
-                            # Check if the position error exceeds the threshold and if object is not moving
-                            #TODO, add a buffer so that inconcistencies in the final position of a moved physical object do not create new configurations
-                            if ((abs(new_x - old_x) > threshold or abs(new_y - old_y) > threshold)): #TODO, add stationary time check
-                                print('physical object has moved or needs to be moved')
-                                #Check if object needs to be moved automatically 
-                                if physicalObject_states[pObj.physical_object_id] == 'moving':
-                                    print("Moving physical object to new location")
-                                    # move to location
-                                    # Experimental function (send g code over serial), 
-                                    # 
-                                    
-                                if physicalObject_states[pObj.physical_object_id] == 'stationary':
-                                    print("Moved physical object by hand")
-                                    #Physical object moved manually
-                                    # Create new configuration for this object
-                                    new_PhysicalConfig = newConfiguration('physical', "NewConfiguration", session) #TODO, dynamically add config name
-                                    new_PhysicalObjectConfig = newPhysicalObjectConfig(
-                                        pObj.physical_object_id, 
-                                        new_PhysicalConfig.config_id,
-                                        new_x,
-                                        new_y, 
-                                        session)
-                                    
-                                    #Set new current config 
-                                    currentConfig = new_PhysicalConfig
+                        #check position of marker against configuration to see if the object has moved, either manual or automatic    
+                        configuration = pObj.configurations[len(pObj.configurations) -1] #last detected configuration
+                        old_x = configuration.x_coordinate
+                        old_y = configuration.y_coordinate
+                        new_x = int(transformed_x)
+                        new_y = int(transformed_y)
+                        posErrorX = abs(old_x - new_x)
+                        posErrorY = abs(old_y - new_y)
+                        print(f"configuration: {old_x, old_y}, object: {new_x, new_y}")
+                        
+                        
+                        # Check if the position error exceeds the threshold and if object is not moving
+                        #TODO, add a buffer so that inconcistencies in the final position of a moved physical object do not create new configurations
+                        if posErrorX > threshold or posErrorY > threshold: #TODO, add stationary time check
+                            print('physical object has moved or needs to be moved')
+                            #Check if object needs to be moved automatically 
+                            if physicalObject_states[pObj.physical_object_id] == 'moving':
+                                print("Moving physical object to new location")
+                                # move to location  
+                                # Experimental function (send g code over serial), 
+                                #MoveToPosition(old_x, old_y, conn) #Old becomes new, because the roles are switched between the machine and the human
+                                
+                            if physicalObject_states[pObj.physical_object_id] == 'stationary':
+                                print("Moved physical object by hand")
+                                #Physical object moved manually
+                                # Create new configuration for this object
+                                new_PhysicalConfig = newConfiguration('physical', "NewConfiguration", session) #TODO, dynamically add config name
+                                new_PhysicalObjectConfig = newPhysicalObjectConfig(
+                                    pObj.physical_object_id, 
+                                    new_PhysicalConfig.config_id,
+                                    new_x,
+                                    new_y, 
+                                    session)
+                                
+                                #Set new current config 
+                                currentConfig = new_PhysicalConfig
 
-                                    # Update current configuration
-                                    currentProduct.current_config = new_PhysicalConfig.config_id
-                                    updated_objects.append((new_PhysicalConfig, new_PhysicalObjectConfig, currentProduct))
+                                # Update current configuration
+                                currentProduct.current_config = new_PhysicalConfig.config_id
+                                updated_objects.append((new_PhysicalConfig, new_PhysicalObjectConfig, currentProduct))
 
-                                    # Send Physical configuration change to Unity using WebSockets
-                            else:
-                                #set state to stationary if no change has been detected
-                                physicalObject_states[pObj.physical_object_id] == 'stationary'
-                    #Bulk save all new objects and configurations at once
-                    if new_physical_objects:
-                        session.bulk_save_objects(new_physical_objects)
-                    if new_configurations:
-                        session.bulk_save_objects(new_configurations)
-                    if updated_objects:
-                        # Add updated items to session in bulk
-                        session.add_all([cfg for obj in updated_objects for cfg in obj])
+                                # Send Physical configuration change to Unity using WebSockets
 
-                    # Final commit to save all changes
-                    session.commit()
+                        else:
+                            #set state to stationary if no change has been detected
+                            physicalObject_states[pObj.physical_object_id] == 'stationary'
+
+                #Bulk save all new objects and configurations at once
+                if new_physical_objects:
+                    session.bulk_save_objects(new_physical_objects)
+                if new_configurations:
+                    session.bulk_save_objects(new_configurations)
+                if updated_objects:
+                    # Add updated items to session in bulk
+                    session.add_all([cfg for obj in updated_objects for cfg in obj])
+
+                # Final commit to save all changes
+                session.commit()
 
             if frame_count > N:
                 #Show image
